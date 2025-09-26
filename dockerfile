@@ -6,4 +6,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV PORT=5000
 EXPOSE 5000
-CMD gunicorn api:app --bind 0.0.0.0:$PORT --timeout 120
+CMD gunicorn --worker-class eventlet -w 1 api:app --bind 0.0.0.0:$PORT --timeout 120
