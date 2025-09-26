@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: vosk-api
+    env: docker
+    plan: free
+    autoDeploy: true
