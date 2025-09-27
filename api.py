@@ -30,7 +30,7 @@ def convert_to_wav(input_bytes):
         "-i", input_path,
         "-ar", str(RATE),
         "-ac", "1",
-        "-c:a", "pcm_s16le", 
+        "-c:a", "pcm_s16le",
         output_path
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -42,7 +42,6 @@ def convert_to_wav(input_bytes):
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "Speech-to-Text API with Hindi Translation is running!"})
-
 
 @app.route("/recognize", methods=["POST"])
 def recognize_audio():
@@ -66,18 +65,18 @@ def recognize_audio():
                 break
             if recognizer.AcceptWaveform(data):
                 res = json.loads(recognizer.Result())
-                if "text" in res and res["text"]:
+                if res.get("text"):
                     partials.append(res["text"])
             else:
                 res = json.loads(recognizer.PartialResult())
-                if "partial" in res and res["partial"]:
+                if res.get("partial"):
                     partials.append(res["partial"])
 
-    os.remove(wav_path)
-
     final_res = json.loads(recognizer.FinalResult())
-    english_text = final_res.get("text", "")
+    english_text = final_res.get("text", "").strip()
     hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
+
+    os.remove(wav_path)
 
     return jsonify({
         "partials": partials,
