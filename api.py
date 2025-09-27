@@ -30,17 +30,13 @@ def convert_to_wav(input_bytes):
         "-i", input_path,
         "-ar", str(RATE),
         "-ac", "1",
-        "-f", "s16le",
+        "-c:a", "pcm_s16le", 
         output_path
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    with open(output_path, "rb") as f:
-        data = f.read()
-
     os.remove(input_path)
-    os.remove(output_path)
-    return data
+    return output_path
 
 
 @app.route("/", methods=["GET"])
@@ -56,23 +52,28 @@ def recognize_audio():
     file = request.files["file"]
     audio_bytes = file.read()
 
-    wav_data = convert_to_wav(audio_bytes)
+    wav_path = convert_to_wav(audio_bytes)
 
     recognizer = KaldiRecognizer(model, RATE)
     recognizer.SetWords(True)
 
     partials = []
-    step = 4000
-    for i in range(0, len(wav_data), step):
-        chunk = wav_data[i:i+step]
-        if recognizer.AcceptWaveform(chunk):
-            res = json.loads(recognizer.Result())
-            if "text" in res and res["text"]:
-                partials.append(res["text"])
-        else:
-            res = json.loads(recognizer.PartialResult())
-            if "partial" in res and res["partial"]:
-                partials.append(res["partial"])
+
+    with open(wav_path, "rb") as wf:
+        while True:
+            data = wf.read(4000)
+            if len(data) == 0:
+                break
+            if recognizer.AcceptWaveform(data):
+                res = json.loads(recognizer.Result())
+                if "text" in res and res["text"]:
+                    partials.append(res["text"])
+            else:
+                res = json.loads(recognizer.PartialResult())
+                if "partial" in res and res["partial"]:
+                    partials.append(res["partial"])
+
+    os.remove(wav_path)
 
     final_res = json.loads(recognizer.FinalResult())
     english_text = final_res.get("text", "")
@@ -85,6 +86,7 @@ def recognize_audio():
             "hindi": hindi_text
         }
     })
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
