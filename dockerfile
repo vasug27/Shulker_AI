@@ -1,9 +1,9 @@
 FROM python:3.12.4-slim
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-RUN apt-get update && apt-get install -y build-essential ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-ENV PORT=5000
+COPY vosk-model-small-en-us-0.15 ./vosk-model-small-en-us-0.15
 EXPOSE 5000
-CMD gunicorn --worker-class eventlet -w 1 api:app --bind 0.0.0.0:$PORT --timeout 120
+CMD ["python", "api.py"]

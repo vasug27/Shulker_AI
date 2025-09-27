@@ -2,5 +2,3 @@ Flask==3.0.3
 vosk==0.3.45
 googletrans==4.0.0-rc1
 gunicorn==23.0.0
-flask-socketio
-eventlet
