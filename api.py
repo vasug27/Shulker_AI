@@ -59,15 +59,32 @@ def recognize_audio():
     wav_data = convert_to_wav(audio_bytes)
 
     recognizer = KaldiRecognizer(model, RATE)
+    recognizer.SetWords(True)
 
-    if recognizer.AcceptWaveform(wav_data):
-        result = json.loads(recognizer.Result())
-        text = result.get("text", "")
-        hindi = translator.translate(text, src="en", dest="hi").text if text else ""
-        return jsonify({"english": text, "hindi": hindi})
-    else:
-        return jsonify(json.loads(recognizer.PartialResult()))
+    partials = []
+    step = 4000
+    for i in range(0, len(wav_data), step):
+        chunk = wav_data[i:i+step]
+        if recognizer.AcceptWaveform(chunk):
+            res = json.loads(recognizer.Result())
+            if "text" in res and res["text"]:
+                partials.append(res["text"])
+        else:
+            res = json.loads(recognizer.PartialResult())
+            if "partial" in res and res["partial"]:
+                partials.append(res["partial"])
 
+    final_res = json.loads(recognizer.FinalResult())
+    english_text = final_res.get("text", "")
+    hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
+
+    return jsonify({
+        "partials": partials,
+        "final": {
+            "english": english_text,
+            "hindi": hindi_text
+        }
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
