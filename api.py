@@ -82,8 +82,14 @@ def recognize_audio():
                 partials.append(text)
                 last_text = text
 
+    # Flush recognizer at the end
     final_res = json.loads(recognizer.FinalResult())
     english_text = final_res.get("text", "").strip()
+
+    # Fallback: if final empty, use last_text
+    if not english_text and last_text:
+        english_text = last_text
+
     hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
 
     wf.close()
