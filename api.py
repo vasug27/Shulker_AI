@@ -29,15 +29,17 @@ def convert_to_wav(input_bytes):
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
-        "-ar", str(RATE),
-        "-ac", "1",
-        "-c:a", "pcm_s16le",
+        "-ar", str(RATE),   
+        "-ac", "1",        
+        "-c:a", "pcm_s16le",    
+        "-af", "highpass=f=200, lowpass=f=3000, afftdn", 
         output_path
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     os.remove(input_path)
     return output_path
+
 
 
 @app.route("/", methods=["GET"])
@@ -82,11 +84,9 @@ def recognize_audio():
                 partials.append(text)
                 last_text = text
 
-    # Flush recognizer at the end
     final_res = json.loads(recognizer.FinalResult())
     english_text = final_res.get("text", "").strip()
 
-    # Fallback: if final empty, use last_text
     if not english_text and last_text:
         english_text = last_text
 
