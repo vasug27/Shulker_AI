@@ -8,6 +8,7 @@ from vosk import Model, KaldiRecognizer
 from googletrans import Translator
 from dotenv import load_dotenv
 import google.generativeai as genai
+from flask_cors import CORS
 
 load_dotenv()
 RATE = 16000
@@ -20,6 +21,7 @@ if not API_KEY:
 genai.configure(api_key=API_KEY)
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 if not os.path.exists(MODEL_DIR):
     raise RuntimeError(f"Vosk model not found. Place it in '{MODEL_DIR}' before deploying.")
