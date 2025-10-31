@@ -9,6 +9,7 @@ from googletrans import Translator
 from dotenv import load_dotenv
 import google.generativeai as genai
 from flask_cors import CORS
+import psutil
 
 load_dotenv()
 RATE = 16000
@@ -24,11 +25,12 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 if not os.path.exists(MODEL_DIR):
-    raise RuntimeError(f"Vosk model not found. Place it in '{MODEL_DIR}' before deploying.")
-
+    raise RuntimeError(f"Vosk model not found in '{MODEL_DIR}'.")
 model = Model(MODEL_DIR)
 
+
 def convert_to_wav(input_bytes):
+    """Convert any input audio to 16kHz mono PCM16 WAV safely."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".input") as f:
         f.write(input_bytes)
         input_path = f.name
@@ -40,16 +42,20 @@ def convert_to_wav(input_bytes):
         "-ar", str(RATE),
         "-ac", "1",
         "-c:a", "pcm_s16le",
-        "-af", "highpass=f=200, lowpass=f=3000, afftdn",
+        "-af", "highpass=f=200,lowpass=f=3000,afftdn",
         output_path
     ]
-    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     os.remove(input_path)
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise ValueError("FFmpeg conversion failed or produced empty file.")
     return output_path
 
 
 def generate_summary(text: str) -> str:
-    model = genai.GenerativeModel("gemini-flash-latest")
+    """Generate Gemini summary for text."""
+    model_gem = genai.GenerativeModel("gemini-flash-latest")
     prompt = (
         "You are a helpful meeting assistant. Summarize the following meeting transcript "
         "into a detailed and comprehensive summary in simple language. "
@@ -58,7 +64,7 @@ def generate_summary(text: str) -> str:
         "Number each point clearly (1., 2., 3., etc.).\n\n"
         + text
     )
-    response = model.generate_content(prompt)
+    response = model_gem.generate_content(prompt)
     return response.text.strip()
 
 
@@ -76,47 +82,59 @@ def recognize_audio():
         return jsonify({"error": "No file uploaded"}), 400
 
     file = request.files["file"]
-    audio_bytes = file.read()
-    wav_path = convert_to_wav(audio_bytes)
+    if file.filename == "":
+        return jsonify({"error": "Empty filename"}), 400
 
-    wf = wave.open(wav_path, "rb")
+    audio_bytes = file.read()
+    if len(audio_bytes) < 1000:
+        return jsonify({"error": "Audio file too small or empty"}), 400
+
+    try:
+        wav_path = convert_to_wav(audio_bytes)
+        wf = wave.open(wav_path, "rb")
+    except Exception as e:
+        return jsonify({"error": f"Audio conversion failed: {e}"}), 400
+
     if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != RATE:
+        wf.close()
+        os.remove(wav_path)
         return jsonify({"error": "Audio must be WAV mono PCM16 16k"}), 400
 
     recognizer = KaldiRecognizer(model, wf.getframerate())
     recognizer.SetWords(True)
-    partials, last_text = [], None
+    text_parts, last_text = [], None
 
     while True:
         data = wf.readframes(4000)
-        if len(data) == 0:
+        if not data:
             break
         if recognizer.AcceptWaveform(data):
             res = json.loads(recognizer.Result())
             text = res.get("text", "").strip()
             if text and text != last_text:
-                partials.append(text)
+                text_parts.append(text)
                 last_text = text
         else:
             res = json.loads(recognizer.PartialResult())
             text = res.get("partial", "").strip()
             if text and text != last_text:
-                partials.append(text)
                 last_text = text
 
     final_res = json.loads(recognizer.FinalResult())
-    english_text = final_res.get("text", "").strip() or last_text or ""
-    hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
+    english_text = final_res.get("text", "").strip() or " ".join(text_parts)
+
+    try:
+        hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
+    except Exception:
+        hindi_text = "(Translation failed)"
 
     wf.close()
     os.remove(wav_path)
 
+    print(f"[DEBUG] RAM usage: {psutil.virtual_memory().percent}%")
+
     return jsonify({
-        "partials": partials,
-        "final": {
-            "english": english_text,
-            "hindi": hindi_text
-        }
+        "final": {"english": english_text, "hindi": hindi_text}
     })
 
 
@@ -139,15 +157,20 @@ def recognize_and_summarize():
 
     file = request.files["file"]
     audio_bytes = file.read()
-    wav_path = convert_to_wav(audio_bytes)
+    if len(audio_bytes) < 1000:
+        return jsonify({"error": "Audio file too small or empty"}), 400
 
-    wf = wave.open(wav_path, "rb")
+    try:
+        wav_path = convert_to_wav(audio_bytes)
+        wf = wave.open(wav_path, "rb")
+    except Exception as e:
+        return jsonify({"error": f"Audio conversion failed: {e}"}), 400
+
     recognizer = KaldiRecognizer(model, wf.getframerate())
-
     text_parts = []
     while True:
         data = wf.readframes(4000)
-        if len(data) == 0:
+        if not data:
             break
         if recognizer.AcceptWaveform(data):
             res = json.loads(recognizer.Result())
@@ -156,15 +179,21 @@ def recognize_and_summarize():
     final_res = json.loads(recognizer.FinalResult())
     english_text = final_res.get("text", "") or " ".join(text_parts)
 
-    summary = generate_summary(english_text) if english_text else ""
-
     wf.close()
     os.remove(wav_path)
+
+    summary = ""
+    if english_text:
+        try:
+            summary = generate_summary(english_text)
+        except Exception:
+            summary = "(Summary generation failed)"
 
     return jsonify({
         "recognized_text": english_text,
         "summary": summary
     })
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
