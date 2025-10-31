@@ -45,7 +45,7 @@ def convert_to_wav(input_bytes):
         "-af", "highpass=f=200,lowpass=f=3000,afftdn",
         output_path
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     os.remove(input_path)
 
     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
@@ -102,31 +102,28 @@ def recognize_audio():
 
     recognizer = KaldiRecognizer(model, wf.getframerate())
     recognizer.SetWords(True)
-    text_parts, last_text = [], None
+    partials, last_text = [], None
 
     while True:
         data = wf.readframes(4000)
-        if not data:
+        if len(data) == 0:
             break
         if recognizer.AcceptWaveform(data):
             res = json.loads(recognizer.Result())
             text = res.get("text", "").strip()
             if text and text != last_text:
-                text_parts.append(text)
+                partials.append(text)
                 last_text = text
         else:
             res = json.loads(recognizer.PartialResult())
             text = res.get("partial", "").strip()
             if text and text != last_text:
+                partials.append(text)
                 last_text = text
 
     final_res = json.loads(recognizer.FinalResult())
-    english_text = final_res.get("text", "").strip() or " ".join(text_parts)
-
-    try:
-        hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
-    except Exception:
-        hindi_text = "(Translation failed)"
+    english_text = final_res.get("text", "").strip() or last_text or ""
+    hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
 
     wf.close()
     os.remove(wav_path)
@@ -134,7 +131,11 @@ def recognize_audio():
     print(f"[DEBUG] RAM usage: {psutil.virtual_memory().percent}%")
 
     return jsonify({
-        "final": {"english": english_text, "hindi": hindi_text}
+        "partials": partials,
+        "final": {
+            "english": english_text,
+            "hindi": hindi_text
+        }
     })
 
 
