@@ -30,7 +30,6 @@ model = Model(MODEL_DIR)
 
 
 def convert_to_wav(input_bytes):
-    """Convert any input audio to 16kHz mono PCM16 WAV safely."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".input") as f:
         f.write(input_bytes)
         input_path = f.name
@@ -38,13 +37,15 @@ def convert_to_wav(input_bytes):
     output_path = input_path + ".wav"
     cmd = [
         "ffmpeg", "-y",
+        "-loglevel", "error",
+        "-threads", "2",
         "-i", input_path,
         "-ar", str(RATE),
         "-ac", "1",
         "-c:a", "pcm_s16le",
-        "-af", "highpass=f=200,lowpass=f=3000,afftdn",
         output_path
     ]
+
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     os.remove(input_path)
 
@@ -54,14 +55,12 @@ def convert_to_wav(input_bytes):
 
 
 def generate_summary(text: str) -> str:
-    """Generate Gemini summary for text."""
     model_gem = genai.GenerativeModel("gemini-flash-latest")
     prompt = (
-        "You are a helpful meeting assistant. Summarize the following meeting transcript "
-        "into a detailed and comprehensive summary in simple language. "
-        "Include all important points, decisions, and action items. "
-        "Do not use headings or subheadings. "
-        "Number each point clearly (1., 2., 3., etc.).\n\n"
+        "You are a helpful meeting assistant. Summarize the following meeting transcript in simple language. "
+        "First, write a short summary paragraph capturing the overall meeting. "
+        "Then, provide a detailed list of all important points, decisions, timelines and action items, numbered clearly like 1., 2., 3., etc. "
+        "Do not use headings or subheadings.\n\n"
         + text
     )
     response = model_gem.generate_content(prompt)
@@ -87,12 +86,30 @@ def recognize_audio():
 
     audio_bytes = file.read()
     if len(audio_bytes) < 1000:
-        return jsonify({"error": "Audio file too small or empty"}), 400
+        return jsonify({
+            "partials": [],
+            "final": {
+                "english": "",
+                "hindi": ""
+            }
+        }), 200
 
     try:
         wav_path = convert_to_wav(audio_bytes)
         wf = wave.open(wav_path, "rb")
     except Exception as e:
+        err_msg = str(e).lower()
+        print(f"[WARN] Audio conversion failed: {e}")
+
+        if "empty" in err_msg or "no such file" in err_msg:
+            return jsonify({
+                "partials": [],
+                "final": {
+                    "english": "",
+                    "hindi": ""
+                }
+            }), 200
+
         return jsonify({"error": f"Audio conversion failed: {e}"}), 400
 
     if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != RATE:
@@ -159,12 +176,24 @@ def recognize_and_summarize():
     file = request.files["file"]
     audio_bytes = file.read()
     if len(audio_bytes) < 1000:
-        return jsonify({"error": "Audio file too small or empty"}), 400
+        return jsonify({
+            "recognized_text": "",
+            "summary": ""
+        }), 200
 
     try:
         wav_path = convert_to_wav(audio_bytes)
         wf = wave.open(wav_path, "rb")
     except Exception as e:
+        err_msg = str(e).lower()
+        print(f"[WARN] Audio conversion failed: {e}")
+
+        if "empty" in err_msg or "no such file" in err_msg:
+            return jsonify({
+                "recognized_text": "",
+                "summary": ""
+            }), 200
+
         return jsonify({"error": f"Audio conversion failed: {e}"}), 400
 
     recognizer = KaldiRecognizer(model, wf.getframerate())
