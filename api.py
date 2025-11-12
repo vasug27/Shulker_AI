@@ -1,6 +1,6 @@
 import os
+import io
 import json
-import tempfile
 import subprocess
 import wave
 from flask import Flask, request, jsonify
@@ -26,36 +26,38 @@ CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 if not os.path.exists(MODEL_DIR):
     raise RuntimeError(f"Vosk model not found in '{MODEL_DIR}'.")
+
 model = Model(MODEL_DIR)
+recognizer = KaldiRecognizer(model, RATE)
+model_gem = genai.GenerativeModel("gemini-flash-latest")
 
-
-def convert_to_wav(input_bytes):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".input") as f:
-        f.write(input_bytes)
-        input_path = f.name
-
-    output_path = input_path + ".wav"
+def convert_to_wav_bytes(input_bytes: bytes) -> io.BytesIO:
+    """Convert uploaded audio to WAV PCM16 mono 16kHz entirely in memory."""
     cmd = [
-        "ffmpeg", "-y",
-        "-loglevel", "error",
-        "-threads", "2",
-        "-i", input_path,
+        "ffmpeg",
+        "-hide_banner", "-loglevel", "error",
+        "-nostdin", "-nostats",
+        "-threads", "1",
+        "-i", "pipe:0",
         "-ar", str(RATE),
         "-ac", "1",
         "-c:a", "pcm_s16le",
-        output_path
+        "-f", "wav", "pipe:1"
     ]
 
-    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    os.remove(input_path)
+    process = subprocess.run(
+        cmd,
+        input=input_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
 
-    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        raise ValueError("FFmpeg conversion failed or produced empty file.")
-    return output_path
+    if process.returncode != 0 or len(process.stdout) == 0:
+        raise ValueError(f"FFmpeg failed: {process.stderr.decode()}")
 
+    return io.BytesIO(process.stdout)
 
 def generate_summary(text: str) -> str:
-    model_gem = genai.GenerativeModel("gemini-flash-latest")
     prompt = (
         "You are a helpful meeting assistant. Summarize the following meeting transcript in simple language. "
         "First, write a short summary paragraph capturing the overall meeting. "
@@ -66,14 +68,12 @@ def generate_summary(text: str) -> str:
     response = model_gem.generate_content(prompt)
     return response.text.strip()
 
-
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
-        "message": "Unified Speech + Summarizer API running!",
+        "message": "Optimized Speech + Summarizer API running!",
         "routes": ["/recognize", "/summarize", "/recognize-and-summarize"]
     })
-
 
 @app.route("/recognize", methods=["POST"])
 def recognize_audio():
@@ -88,39 +88,24 @@ def recognize_audio():
     if len(audio_bytes) < 1000:
         return jsonify({
             "partials": [],
-            "final": {
-                "english": "",
-                "hindi": ""
-            }
+            "final": {"english": "", "hindi": ""}
         }), 200
 
     try:
-        wav_path = convert_to_wav(audio_bytes)
-        wf = wave.open(wav_path, "rb")
+        wav_buffer = convert_to_wav_bytes(audio_bytes)
+        wf = wave.open(wav_buffer, "rb")
     except Exception as e:
         err_msg = str(e).lower()
         print(f"[WARN] Audio conversion failed: {e}")
 
         if "empty" in err_msg or "no such file" in err_msg:
-            return jsonify({
-                "partials": [],
-                "final": {
-                    "english": "",
-                    "hindi": ""
-                }
-            }), 200
+            return jsonify({"partials": [], "final": {"english": "", "hindi": ""}}), 200
 
         return jsonify({"error": f"Audio conversion failed: {e}"}), 400
 
-    if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != RATE:
-        wf.close()
-        os.remove(wav_path)
-        return jsonify({"error": "Audio must be WAV mono PCM16 16k"}), 400
+    recognizer.Reset()
 
-    recognizer = KaldiRecognizer(model, wf.getframerate())
-    recognizer.SetWords(True)
     partials, last_text = [], None
-
     while True:
         data = wf.readframes(4000)
         if len(data) == 0:
@@ -143,18 +128,13 @@ def recognize_audio():
     hindi_text = translator.translate(english_text, src="en", dest="hi").text if english_text else ""
 
     wf.close()
-    os.remove(wav_path)
 
     print(f"[DEBUG] RAM usage: {psutil.virtual_memory().percent}%")
 
     return jsonify({
         "partials": partials,
-        "final": {
-            "english": english_text,
-            "hindi": hindi_text
-        }
+        "final": {"english": english_text, "hindi": hindi_text}
     })
-
 
 @app.route("/summarize", methods=["POST"])
 def summarize_text():
@@ -167,7 +147,6 @@ def summarize_text():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/recognize-and-summarize", methods=["POST"])
 def recognize_and_summarize():
     if "file" not in request.files:
@@ -176,27 +155,21 @@ def recognize_and_summarize():
     file = request.files["file"]
     audio_bytes = file.read()
     if len(audio_bytes) < 1000:
-        return jsonify({
-            "recognized_text": "",
-            "summary": ""
-        }), 200
+        return jsonify({"recognized_text": "", "summary": ""}), 200
 
     try:
-        wav_path = convert_to_wav(audio_bytes)
-        wf = wave.open(wav_path, "rb")
+        wav_buffer = convert_to_wav_bytes(audio_bytes)
+        wf = wave.open(wav_buffer, "rb")
     except Exception as e:
         err_msg = str(e).lower()
         print(f"[WARN] Audio conversion failed: {e}")
 
         if "empty" in err_msg or "no such file" in err_msg:
-            return jsonify({
-                "recognized_text": "",
-                "summary": ""
-            }), 200
+            return jsonify({"recognized_text": "", "summary": ""}), 200
 
         return jsonify({"error": f"Audio conversion failed: {e}"}), 400
 
-    recognizer = KaldiRecognizer(model, wf.getframerate())
+    recognizer.Reset()
     text_parts = []
     while True:
         data = wf.readframes(4000)
@@ -210,7 +183,6 @@ def recognize_and_summarize():
     english_text = final_res.get("text", "") or " ".join(text_parts)
 
     wf.close()
-    os.remove(wav_path)
 
     summary = ""
     if english_text:
@@ -219,11 +191,7 @@ def recognize_and_summarize():
         except Exception:
             summary = "(Summary generation failed)"
 
-    return jsonify({
-        "recognized_text": english_text,
-        "summary": summary
-    })
-
+    return jsonify({"recognized_text": english_text, "summary": summary})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
