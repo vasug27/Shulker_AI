@@ -6,4 +6,3 @@ gunicorn==23.0.0
 google-generativeai
 python-dotenv
 psutil
-numpy
