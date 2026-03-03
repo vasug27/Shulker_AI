@@ -46,6 +46,7 @@ Shulker_AI/
 ├── runtime.txt                     # Python 3.12.4
 ├── .env                            # API key (not committed)
 ├── .gitignore                      # Ignores venv, .env, __pycache__
+├── README.md                       # Project documentation
 └── vosk-model-small-en-us-0.15/    # Offline Vosk English model
     ├── am/                         # Acoustic model
     ├── graph/                      # Language graph (FST)
