@@ -1,8 +1,8 @@
-Flask==3.0.3
-flask-cors
+fastapi
+uvicorn
+python-multipart
 vosk==0.3.45
 googletrans==4.0.0-rc1
-gunicorn==23.0.0
 google-generativeai
 python-dotenv
 psutil

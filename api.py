@@ -3,13 +3,15 @@ import io
 import json
 import subprocess
 import wave
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, File, UploadFile, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from vosk import Model, KaldiRecognizer
 from googletrans import Translator
 from dotenv import load_dotenv
 import google.generativeai as genai
-from flask_cors import CORS
 import psutil
+import uvicorn
 
 load_dotenv()
 RATE = 16000
@@ -23,8 +25,16 @@ if not API_KEY:
 
 genai.configure(api_key=API_KEY)
 
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
+app = FastAPI(title="Optimized Speech + Summarizer API")
+
+# Configure CORS to allow all origins as requested
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if not os.path.exists(MODEL_DIR):
     raise RuntimeError(f"Vosk model not found in '{MODEL_DIR}'.")
@@ -75,30 +85,27 @@ def generate_summary(text: str) -> str:
     response = model_gem.generate_content(prompt)
     return response.text.strip()
 
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
+
+@app.get("/")
+async def home():
+    return {
         "message": "Optimized Speech + Summarizer API running!",
         "routes": ["/recognize", "/summarize", "/recognize-and-summarize"]
-    })
+    }
 
 
-@app.route("/recognize", methods=["POST"])
-def recognize_audio():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    file = request.files["file"]
-    audio_bytes = file.read()
+@app.post("/recognize")
+async def recognize_audio(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
 
     if len(audio_bytes) < 1000:
-        return jsonify({"partials": [], "final": {"english": "", "hindi": ""}})
+        return {"partials": [], "final": {"english": "", "hindi": ""}}
 
     try:
         wav_buffer = convert_to_wav_bytes(audio_bytes)
         wf = wave.open(wav_buffer, "rb")
     except Exception as e:
-        return jsonify({"error": f"Audio conversion failed: {e}"}), 400
+        return JSONResponse(status_code=400, content={"error": f"Audio conversion failed: {e}"})
 
     recognizer.Reset()
 
@@ -130,45 +137,60 @@ def recognize_audio():
     final_res = json.loads(recognizer.FinalResult())
     english = final_res.get("text", "").strip() or last_text or ""
 
-    hindi = translator.translate(english, src="en", dest="hi").text if english else ""
+    try:
+        hindi = translator.translate(english, src="en", dest="hi").text if english else ""
+    except Exception as e:
+        hindi = f"(Translation failed: {e})"
 
     wf.close()
 
-    return jsonify({
+    return {
         "partials": partials,
         "final": {"english": english, "hindi": hindi}
-    })
+    }
 
 
-@app.route("/summarize", methods=["POST"])
-def summarize_text():
-    text = request.data.decode().strip()
+@app.post(
+    "/summarize",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "text/plain": {
+                    "schema": {
+                        "type": "string",
+                        "example": "This is a sample meeting transcript to summarize."
+                    }
+                }
+            },
+            "required": True
+        }
+    }
+)
+async def summarize_text(request: Request):
+    body = await request.body()
+    text = body.decode().strip()
     if not text:
-        return jsonify({"error": "Empty request body"}), 400
+        return JSONResponse(status_code=400, content={"error": "Empty request body"})
 
     try:
         summary = generate_summary(text)
-        return jsonify({"summary": summary, "input_length": len(text)})
+        return {"summary": summary, "input_length": len(text)}
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.route("/recognize-and-summarize", methods=["POST"])
-def recognize_and_summarize():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    file = request.files["file"]
-    audio_bytes = file.read()
+@app.post("/recognize-and-summarize")
+async def recognize_and_summarize(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
 
     if len(audio_bytes) < 1000:
-        return jsonify({"recognized_text": "", "summary": ""})
+        return {"recognized_text": "", "summary": ""}
 
     try:
         wav_buffer = convert_to_wav_bytes(audio_bytes)
         wf = wave.open(wav_buffer, "rb")
     except Exception as e:
-        return jsonify({"error": f"Audio conversion failed: {e}"}), 400
+        return JSONResponse(status_code=400, content={"error": f"Audio conversion failed: {e}"})
 
     recognizer.Reset()
 
@@ -197,8 +219,8 @@ def recognize_and_summarize():
         except Exception:
             summary = "(Summary generation failed)"
 
-    return jsonify({"recognized_text": english, "summary": summary})
+    return {"recognized_text": english, "summary": summary}
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    uvicorn.run("api:app", host="0.0.0.0", port=5000, reload=False)
